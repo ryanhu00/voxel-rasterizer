@@ -1,8 +1,7 @@
-// Minimal image types and Netpbm I/O.
-//
-// Color images are PPM (P6, 8-bit RGB), masks/grayscale are PGM (P5, 8-bit).
-// We deliberately avoid external image libraries so the project builds with
-// only a C++17 compiler.
+// Image type and Netpbm I/O.
+// GPU plan: upload into a cudaArray + cudaTextureObject_t per view; replaces
+// the CPU bilinear samplers with a single tex2D() call.
+
 #pragma once
 
 #include <cstdint>
@@ -15,7 +14,7 @@ struct ImageU8 {
     int width{0};
     int height{0};
     int channels{0};            // 1 or 3
-    std::vector<std::uint8_t> data;  // row-major, channels interleaved
+    std::vector<std::uint8_t> data;
 
     ImageU8() = default;
     ImageU8(int w, int h, int c)
@@ -31,12 +30,8 @@ struct ImageU8 {
     }
 };
 
-// Returns true on success. Format is inferred from `image.channels`.
 bool save_ppm(const std::string& path, const ImageU8& image);
 bool save_pgm(const std::string& path, const ImageU8& image);
-
-// Loads a binary Netpbm file (P5 or P6). Returns true on success and sets
-// `out` accordingly. Comments inside the header are ignored.
 bool load_pnm(const std::string& path, ImageU8& out);
 
 }  // namespace voxr

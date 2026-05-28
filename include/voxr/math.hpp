@@ -1,7 +1,5 @@
-// Lightweight vector / matrix utilities for the CPU prototype.
-//
-// Header-only and free of external deps so the same types can be reused
-// verbatim inside CUDA kernels in Week 2 (add __host__ __device__ then).
+// Vec3 / Mat3 utilities.
+
 #pragma once
 
 #include <array>
@@ -52,7 +50,7 @@ inline std::ostream& operator<<(std::ostream& os, Vec3 v) {
     return os;
 }
 
-// 3x3 row-major matrix. Stored as 9 floats, m[r][c].
+// 3x3 row-major.
 struct Mat3 {
     std::array<float, 9> m{};
 
@@ -92,7 +90,6 @@ inline Mat3 transpose(const Mat3& A) {
     return T;
 }
 
-// Rotation matrices ----------------------------------------------------------
 inline Mat3 rotation_x(float a) {
     Mat3 r = Mat3::identity();
     float c = std::cos(a), s = std::sin(a);
@@ -115,12 +112,8 @@ inline Mat3 rotation_z(float a) {
     return r;
 }
 
-// OpenCV-style view rotation. Returns R such that  x_cam = R * (X_world - eye)
-// where the camera frame is +X right, +Y down, +Z forward (into the scene),
-// and the world direction `up` appears at the top of the resulting image.
-//
-// Rows of R are the camera basis expressed in world coordinates:
-//   row 0 = right_world, row 1 = down_world, row 2 = forward_world.
+// OpenCV-style: x_cam = R * (X_world - eye). Camera frame is +X right,
+// +Y down, +Z forward. Rows of R are right/down/forward in world coords.
 inline Mat3 look_at_rotation(Vec3 eye, Vec3 target, Vec3 up) {
     Vec3 f = normalize(target - eye);            // forward
     Vec3 r = normalize(cross(f, normalize(up))); // right  = f x up
@@ -132,7 +125,6 @@ inline Mat3 look_at_rotation(Vec3 eye, Vec3 target, Vec3 up) {
     return R;
 }
 
-// ----------------------------------------------------------------------------
 inline float clampf(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
