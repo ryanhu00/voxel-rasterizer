@@ -7,12 +7,58 @@
 #include <thread>
 #include <vector>
 
+// =============================================================================
+// GPU PARALLELIZATION STRATEGY (reconstruct_cuda.cu)
+// =============================================================================
+// This file is the CPU reference; the structure below is intentionally written
+// so each "kernel body" maps 1:1 to a CUDA thread.
+//
+// Parallelism axis:
+//   Every voxel (x, y, z) is independent — no inter-voxel dependencies, no
+//   atomics, no reductions. This is the ideal embarrassingly-parallel case.
+//   Launch one thread per voxel:
+//       dim3 block(8, 8, 8);                       // 512 threads / block
+//       dim3 grid(ceil(nx/8), ceil(ny/8), ceil(nz/8));
+//   8^3 is a good starting point because it matches typical voxel locality and
+//   keeps the block under the 1024-thread cap with room for register pressure.
+//
+// Memory layout:
+//   - cameras[]            -> __constant__ memory (small, broadcast to all
+//                            threads in a warp; same camera params reread per
+//                            voxel per camera). Cap ~64 KB; if cam count is
+//                            larger, fall back to global + L1.
+//   - masks[], images[]    -> cudaTextureObject_t per view. Textures give us
+//                            (a) free hardware bilinear filtering — replacing
+//                            sample_mask_bilinear / sample_rgb_bilinear with
+//                            tex2D() calls, (b) clamp-to-border addressing so
+//                            the out-of-bounds branch disappears, and (c) 2D
+//                            spatial cache that neighbouring threads share
+//                            when they project to nearby pixels.
+//   - grid.occupancy/color -> global memory, one write per thread. Writes are
+//                            naturally coalesced if grid.linear_index uses the
+//                            standard x-fastest layout (threadIdx.x neighbours
+//                            write contiguous bytes).
+//
+// Divergence and load balance:
+//   The inner loop over cameras is uniform across a warp (all threads iterate
+//   the same num_cams), so the only divergence is the cam.project() / mask
+//   threshold branch. That's mild — warps spend roughly the same work on
+//   "inside silhouette" vs "outside" voxels.
+//
+// Expected speedup over the CPU striped-thread version:
+//   ~50-200x for a 256^3 grid with 16 views, dominated by texture-sampled
+//   bilinear fetches and the lack of any serialization.
+// =============================================================================
+
 namespace voxr {
 
 namespace {
 
 // Bilinear-sampled mask value in [0, 255] at floating pixel (u, v). Returns
 // 0 (background) when the projection lies outside the image.
+// GPU: replace this entire function with `tex2D<float>(mask_tex, u, v)`. A
+// cudaTextureObject_t configured with cudaFilterModeLinear and
+// cudaAddressModeBorder gives identical semantics in a single instruction.
 inline float sample_mask_bilinear(const ImageU8& mask, float u, float v) {
     if (u < 0.f || v < 0.f) return 0.f;
     int x0 = static_cast<int>(std::floor(u));
@@ -31,6 +77,9 @@ inline float sample_mask_bilinear(const ImageU8& mask, float u, float v) {
 }
 
 // Bilinear-sampled RGB at floating pixel (u, v) on an interleaved RGB image.
+// GPU: use a uchar4 texture (pad RGB->RGBA on upload) and `tex2D<float4>` for
+// a single coalesced 4-byte fetch with hardware bilinear. uchar4 is preferred
+// over float4 here — 4x smaller texture footprint, same filtering quality.
 inline bool sample_rgb_bilinear(const ImageU8& img, float u, float v,
                                 Vec3& out) {
     if (img.channels != 3) return false;
@@ -55,6 +104,9 @@ inline bool sample_rgb_bilinear(const ImageU8& img, float u, float v,
 
 // Process one z-slice of the grid. This is the "kernel body" of the CPU
 // prototype: it does exactly what one CUDA block-row of threads will do later.
+// GPU: the (x, y) double loop disappears — those become threadIdx.x/y across
+// the launch grid, and `z` becomes threadIdx.z + blockIdx.z * blockDim.z. The
+// function body from the inner loop onward becomes the kernel verbatim.
 void process_slice(int z,
                    VoxelGrid& grid,
                    const std::vector<Camera>& cameras,
@@ -74,6 +126,11 @@ void process_slice(int z,
             Vec3  color_sum{0.f, 0.f, 0.f};
             int   color_count = 0;
 
+            // GPU: this camera loop is uniform across a warp — every thread
+            // visits the same camera index in lockstep. That lets us preload
+            // `cam` into a register once per iteration (it's already in
+            // __constant__ memory, so the broadcast is free) and incurs no
+            // divergence until the project()/mask-threshold branch below.
             for (int ci = 0; ci < num_cams; ++ci) {
                 const Camera& cam = cameras[ci];
                 float u, v, depth;
@@ -93,6 +150,10 @@ void process_slice(int z,
                 }
             }
 
+            // GPU: each thread owns a unique `idx`, so the write below needs
+            // no atomics. With x-fastest linear indexing, threads in a warp
+            // (consecutive threadIdx.x) write consecutive bytes — perfectly
+            // coalesced for both `occupancy` and the three color planes.
             const std::size_t idx = grid.linear_index(x, y, z);
             if (consistent >= required) {
                 grid.occupancy[idx] = 1;
@@ -130,6 +191,13 @@ void reconstruct_cpu(VoxelGrid& grid,
     // Crude but effective: launch one worker per hardware thread, partition
     // slices in a striped fashion to balance load (a sphere's middle slices
     // touch more cameras than the polar caps).
+    // GPU: this entire scheduler is replaced by a single kernel launch. The
+    // hardware warp scheduler handles the "striped load balance" implicitly —
+    // any block that finishes its 8^3 tile early gets retired and the SM
+    // picks up the next one. Host-side work shrinks to:
+    //     upload cameras (constant mem) + masks/images (textures),
+    //     launch reconstruct_kernel<<<grid, block>>>(...),
+    //     download grid.occupancy + color planes.
     const unsigned n_workers =
         std::max(1u, std::thread::hardware_concurrency());
 
