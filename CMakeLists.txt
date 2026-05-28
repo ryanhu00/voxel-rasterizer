@@ -44,6 +44,12 @@ target_link_libraries(reconstruct PRIVATE voxr_core)
 add_executable(render apps/render.cpp)
 target_link_libraries(render PRIVATE voxr_core)
 
+add_executable(bake_views apps/bake_views.cpp)
+target_link_libraries(bake_views PRIVATE voxr_core)
+
+add_executable(make_orbit_cameras apps/make_orbit_cameras.cpp)
+target_link_libraries(make_orbit_cameras PRIVATE voxr_core)
+
 # ---- Tests -------------------------------------------------------------------
 enable_testing()
 
