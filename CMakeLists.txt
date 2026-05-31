@@ -13,9 +13,31 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    add_compile_options(-Wall -Wextra -Wpedantic -Wno-unused-parameter)
-    add_compile_options($<$<CONFIG:Release>:-O3>)
-    add_compile_options($<$<CONFIG:Release>:-ffast-math>)
+    # Scope to C++ so they don't leak to nvcc, which rejects -Wpedantic etc.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+                        $<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-parameter>)
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-O3>)
+    add_compile_options($<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-ffast-math>)
+endif()
+
+# ---- Optional CUDA -----------------------------------------------------------
+# Week 2: GPU ports of the SfS and ray-march kernels. The build degrades
+# gracefully to CPU-only when no CUDA toolkit is present.
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES native)
+    endif()
+    set(VOXR_HAVE_CUDA TRUE)
+    message(STATUS "CUDA found (${CMAKE_CUDA_COMPILER_VERSION}) -- GPU paths enabled")
+else()
+    message(STATUS "CUDA not found -- building CPU-only")
 endif()
 
 # ---- Core CPU library --------------------------------------------------------
@@ -34,18 +56,43 @@ target_include_directories(voxr_core PUBLIC
 )
 target_compile_features(voxr_core PUBLIC cxx_std_17)
 
+# ---- CUDA library ------------------------------------------------------------
+# GPU kernels validated against the CPU reference in voxr_core. Targets that
+# want GPU paths link voxr_cuda and get the VOXR_WITH_CUDA define.
+if(VOXR_HAVE_CUDA)
+    add_library(voxr_cuda STATIC
+        src/reconstruct_cuda.cu
+        src/render_cuda.cu
+    )
+    target_include_directories(voxr_cuda PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(voxr_cuda PUBLIC voxr_core)
+    target_compile_definitions(voxr_cuda PUBLIC VOXR_WITH_CUDA)
+endif()
+
+# Link the GPU lib into a target when available.
+function(voxr_maybe_link_cuda target)
+    if(VOXR_HAVE_CUDA)
+        target_link_libraries(${target} PRIVATE voxr_cuda)
+    endif()
+endfunction()
+
 # ---- Applications ------------------------------------------------------------
 add_executable(synth_dataset apps/synth_dataset.cpp)
 target_link_libraries(synth_dataset PRIVATE voxr_core)
 
 add_executable(reconstruct apps/reconstruct.cpp)
 target_link_libraries(reconstruct PRIVATE voxr_core)
+voxr_maybe_link_cuda(reconstruct)
 
 add_executable(render apps/render.cpp)
 target_link_libraries(render PRIVATE voxr_core)
+voxr_maybe_link_cuda(render)
 
 add_executable(bake_views apps/bake_views.cpp)
 target_link_libraries(bake_views PRIVATE voxr_core)
+voxr_maybe_link_cuda(bake_views)
 
 add_executable(make_orbit_cameras apps/make_orbit_cameras.cpp)
 target_link_libraries(make_orbit_cameras PRIVATE voxr_core)
@@ -65,3 +112,11 @@ add_executable(test_pipeline tests/test_pipeline.cpp)
 target_link_libraries(test_pipeline PRIVATE voxr_core)
 add_test(NAME test_pipeline COMMAND test_pipeline
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+
+# GPU-vs-CPU parity: the CPU reference is the oracle for both kernels.
+if(VOXR_HAVE_CUDA)
+    add_executable(test_cuda_parity tests/test_cuda_parity.cpp)
+    target_link_libraries(test_cuda_parity PRIVATE voxr_core voxr_cuda)
+    add_test(NAME test_cuda_parity COMMAND test_cuda_parity
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+endif()

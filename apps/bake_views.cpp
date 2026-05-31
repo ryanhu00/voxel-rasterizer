@@ -16,6 +16,9 @@
 #include "voxr/image.hpp"
 #include "voxr/render_cpu.hpp"
 #include "voxr/voxel_grid.hpp"
+#ifdef VOXR_WITH_CUDA
+#include "voxr/render_cuda.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -24,6 +27,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -48,6 +52,7 @@ struct Args {
     bool  target_set = false;
     float ux = 0.f, uy = 1.f, uz = 0.f;
     bool  no_shading = false;
+    bool  gpu = false;
 };
 
 bool parse_args(int argc, char** argv, Args& a) {
@@ -78,13 +83,14 @@ bool parse_args(int argc, char** argv, Args& a) {
                                                    a.uy = std::atof(argv[++i]);
                                                    a.uz = std::atof(argv[++i]); }
         else if (s == "--no-shading")   { a.no_shading = true; }
+        else if (s == "--gpu")          { a.gpu = true; }
         else if (s == "-h" || s == "--help") {
             std::cout <<
               "Usage: bake_views --voxels FILE --out DIR\n"
               "                  [--res W H] [--fov RAD]\n"
               "                  [--azim N] [--elev N] [--elev-range MIN_DEG MAX_DEG]\n"
               "                  [--radii N] [--radius-range MIN MAX]\n"
-              "                  [--target X Y Z] [--up X Y Z] [--no-shading]\n";
+              "                  [--target X Y Z] [--up X Y Z] [--no-shading] [--gpu]\n";
             std::exit(0);
         } else {
             std::cerr << "unknown arg: " << s << "\n"; return false;
@@ -423,7 +429,19 @@ int main(int argc, char** argv) {
               << a.azim_count << " azim x "
               << a.elev_count << " elev x "
               << a.radius_count << " radii) at "
-              << a.width << "x" << a.height << "..." << std::endl;
+              << a.width << "x" << a.height << " ("
+              << (a.gpu ? "GPU" : "CPU") << ")..." << std::endl;
+
+#ifdef VOXR_WITH_CUDA
+    // Grid-resident GPU loop: the voxel grid is uploaded once and every baked
+    // frame is a kernel launch + readback, no re-upload.
+    std::unique_ptr<voxr::CudaVoxelRenderer> gpu_renderer;
+    if (a.gpu) gpu_renderer = std::make_unique<voxr::CudaVoxelRenderer>(grid);
+#else
+    if (a.gpu) {
+        std::cerr << "--gpu needs a CUDA build\n"; return 1;
+    }
+#endif
 
     int done = 0;
     for (int ai = 0; ai < a.azim_count; ++ai) {
@@ -447,6 +465,11 @@ int main(int argc, char** argv) {
                     a.width, a.height, a.fov_y,
                     eye, {a.tx, a.ty, a.tz}, {a.ux, a.uy, a.uz});
                 voxr::ImageU8 img;
+#ifdef VOXR_WITH_CUDA
+                if (gpu_renderer) {
+                    if (!gpu_renderer->render(cam, img, ropts)) return 1;
+                } else
+#endif
                 if (!voxr::render_cpu(grid, cam, img, ropts)) return 1;
 
                 int idx = (ai * a.elev_count + ei) * a.radius_count + ri;

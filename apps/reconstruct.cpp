@@ -9,6 +9,9 @@
 #include "voxr/image.hpp"
 #include "voxr/reconstruct_cpu.hpp"
 #include "voxr/voxel_grid.hpp"
+#ifdef VOXR_WITH_CUDA
+#include "voxr/reconstruct_cuda.hpp"
+#endif
 
 #include <cstdlib>
 #include <filesystem>
@@ -28,6 +31,7 @@ struct Args {
     float cx = 0.f, cy = 0.f, cz = 0.f;
     int   min_views = -1;
     bool  fuse_color = true;
+    bool  gpu = false;
 };
 
 bool parse_args(int argc, char** argv, Args& a) {
@@ -47,10 +51,11 @@ bool parse_args(int argc, char** argv, Args& a) {
                                                 a.cz = std::atof(argv[++i]); }
         else if (s == "--min-views") { need(1); a.min_views = std::atoi(argv[++i]); }
         else if (s == "--no-color")  { a.fuse_color = false; }
+        else if (s == "--gpu")       { a.gpu = true; }
         else if (s == "-h" || s == "--help") {
             std::cout << "Usage: reconstruct --in DIR --out PATH [--grid N]\n"
                          "                   [--bound F] [--center X Y Z]\n"
-                         "                   [--min-views N] [--no-color]\n";
+                         "                   [--min-views N] [--no-color] [--gpu]\n";
             std::exit(0);
         } else {
             std::cerr << "unknown arg: " << s << "\n"; return false;
@@ -115,8 +120,18 @@ int main(int argc, char** argv) {
     opts.fuse_color           = a.fuse_color;
 
     std::cout << "Reconstructing " << a.grid_n << "^3 voxels from "
-              << recs.size() << " views..." << std::endl;
-    voxr::reconstruct_cpu(grid, cameras_vec, masks, images, opts);
+              << recs.size() << " views (" << (a.gpu ? "GPU" : "CPU") << ")..."
+              << std::endl;
+    if (a.gpu) {
+#ifdef VOXR_WITH_CUDA
+        voxr::reconstruct_cuda(grid, cameras_vec, masks, images, opts);
+#else
+        std::cerr << "built without CUDA; rebuild with a CUDA toolkit\n";
+        return 1;
+#endif
+    } else {
+        voxr::reconstruct_cpu(grid, cameras_vec, masks, images, opts);
+    }
 
     std::size_t occ = grid.occupied_count();
     std::cout << "Occupied voxels: " << occ << " ("
