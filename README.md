@@ -1,13 +1,6 @@
-# voxel-rasterizer
+# Voxel-Rasterizer
 
-GPU-accelerated multi-view voxel reconstruction + rasterization
-(CS179, Ryan Hu & Samuel Xie). Given calibrated images, reconstruct a 3D
-occupancy + color grid via shape-from-silhouette, then ray-march novel views.
-
-Both kernel-like loops (per-voxel SfS, per-pixel ray-march) now have **CUDA
-ports** alongside the CPU reference. The CPU paths stay as the validation
-oracle — `test_cuda_parity` pins the GPU output to them. Pass `--gpu` to
-`reconstruct`/`render` to use the device.
+GPU-accelerated implementation of a multi-view voxel reconstructor + rasterizer. Given calibrated images, reconstruct a 3D occupancy + color grid via shape-from-silhouette, and then ray-march novel views.
 
 ## Layout
 
