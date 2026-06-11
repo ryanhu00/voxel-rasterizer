@@ -97,26 +97,17 @@ voxr_maybe_link_cuda(bake_views)
 add_executable(make_orbit_cameras apps/make_orbit_cameras.cpp)
 target_link_libraries(make_orbit_cameras PRIVATE voxr_core)
 
-# ---- Tests -------------------------------------------------------------------
+# ---- Tests (CPU vs GPU benchmarks) -------------------------------------------
 enable_testing()
 
-add_executable(test_camera tests/test_camera.cpp)
-target_link_libraries(test_camera PRIVATE voxr_core)
-add_test(NAME test_camera COMMAND test_camera)
-
-add_executable(test_voxel_grid tests/test_voxel_grid.cpp)
-target_link_libraries(test_voxel_grid PRIVATE voxr_core)
-add_test(NAME test_voxel_grid COMMAND test_voxel_grid)
-
-add_executable(test_pipeline tests/test_pipeline.cpp)
-target_link_libraries(test_pipeline PRIVATE voxr_core)
-add_test(NAME test_pipeline COMMAND test_pipeline
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-
-# GPU-vs-CPU parity: the CPU reference is the oracle for both kernels.
-if(VOXR_HAVE_CUDA)
-    add_executable(test_cuda_parity tests/test_cuda_parity.cpp)
-    target_link_libraries(test_cuda_parity PRIVATE voxr_core voxr_cuda)
-    add_test(NAME test_cuda_parity COMMAND test_cuda_parity
+function(voxr_add_bench name)
+    add_executable(${name} tests/${name}.cpp)
+    target_link_libraries(${name} PRIVATE voxr_core)
+    voxr_maybe_link_cuda(${name})
+    add_test(NAME ${name} COMMAND ${name}
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
-endif()
+endfunction()
+
+voxr_add_bench(test_bench_reconstruct)
+voxr_add_bench(test_bench_render)
+voxr_add_bench(test_bench_pipeline)

@@ -88,46 +88,7 @@ GPU vs CPU for both pipeline stages, plus `ncu` kernel profiles. The CPU paths
 output bit-for-bit on the parity test.
 
 **Setup:** NVIDIA RTX A5000 (sm_86), CUDA 12.5, 16-thread CPU baseline. Sphere
-dataset, 24 views. Reproduce with the commands in each section.
-
-#### Headline numbers
-
-| Workload | CPU | GPU | Speedup |
-| --- | --- | --- | --- |
-| Reconstruct 256³ (kernel only) | — | **13.9 ms** | — |
-| Reconstruct 256³ (end-to-end wall) | 2.01 s | 0.52 s | ~3.9× |
-| Render 1024² (kernel only) | — | **1.70 ms** (≈480 fps) | — |
-| Render orbit 36×512² (wall) | 1.85 s | 0.57 s | ~3.2× |
-
-The end-to-end GPU times include one-time CUDA context init (~0.3 s) and disk
-I/O shared with the CPU runs, so they *understate* the compute speedup. The
-kernel-only times below are the honest device cost.
-
-#### Isolated timing (CUDA events)
-
-`render --bench` keeps the grid resident on the device and times the kernel and
-readback separately, so the per-frame cost is real interactive cost — not
-polluted by the grid upload.
-
-```
-build/render --voxels voxels.bin --res 1024 1024 --bench 200
-  grid upload (1x) :    9.325 ms      # paid once
-  kernel    avg/min:    2.095 / 1.717 ms   (477 / 582 fps)
-  readback  avg    :    0.372 ms
-  frame (kernel+rb):    2.466 ms      (405 fps)
-```
-
-```
-VOXR_CUDA_TIMING=1 build/reconstruct --in data/sphere --grid 256 --gpu
-  [voxr] reconstruct_kernel: 17.1 ms (256^3 voxels, 24 views)
-```
-
-**Why the resident loop matters:** re-uploading the 64 MB grid every frame
-(what the one-shot `render_cuda` does) costs ~9 ms — more than the 1.7 ms
-kernel. `CudaVoxelRenderer` uploads once, which is what makes the orbit and the
-interactive viewer (`bake_views --gpu`) a true GPU render loop. This is the
-fix for the "single small render favors the CPU" caveat: amortized over frames,
-the GPU runs the trace at ~480 fps.
+dataset, 24 views.
 
 #### `ncu` kernel profiles
 
@@ -228,26 +189,27 @@ World right-handed, +Y up by default. Projection is
 
 ## Tests
 
-Header-only harness in [tests/test_harness.hpp](tests/test_harness.hpp)
-(`VOXR_EXPECT` / `VOXR_EXPECT_NEAR`; failure count = exit code).
+Three benchmark tests compare **CPU vs GPU wall time** for reconstruction,
+rendering, and the combined pipeline. Each prints structured metrics to stderr
+and exits 0 on success.
 
-| Test | What it pins down |
+| Test | What it measures |
 | --- | --- |
-| [`test_camera`](tests/test_camera.cpp) | Project ↔ unproject round-trip; principal-point and axis-direction sanity; behind-camera rejection. |
-| [`test_voxel_grid`](tests/test_voxel_grid.cpp) | `x + nx*(y + ny*z)` indexing; `voxel_center` / `world_to_grid` inverse; full `VOXG` save/load round-trip. |
-| [`test_pipeline`](tests/test_pipeline.cpp) | Synth → reconstruct → render. Requires **recall > 0.95** and **bloat < 0.40**. The CUDA validation oracle. |
-| [`test_cuda_parity`](tests/test_cuda_parity.cpp) | GPU vs CPU: occupancy flips < 0.1%, changed render pixels < 1%. Built only when CUDA is present. |
+| [`test_bench_reconstruct`](tests/test_bench_reconstruct.cpp) | `reconstruct_cpu` vs `reconstruct_cuda` (avg over warmup + iters) |
+| [`test_bench_render`](tests/test_bench_render.cpp) | `render_cpu` vs `CudaVoxelRenderer` kernel time (+ upload/readback breakdown) |
+| [`test_bench_pipeline`](tests/test_bench_pipeline.cpp) | Reconstruct + render end-to-end on both backends |
 
-Run: `ctest --test-dir build --output-on-failure`. Artifacts in
-`build/test_artifacts/`.
+Shared setup lives in [`tests/bench_common.hpp`](tests/bench_common.hpp).
+Defaults: 128³ grid, 24 views, 128² synth images, 512² render. Override via
+env vars: `VOXR_BENCH_GRID`, `VOXR_BENCH_VIEWS`, `VOXR_BENCH_SYNTH_RES`,
+`VOXR_BENCH_RENDER_W`, `VOXR_BENCH_RENDER_H`, `VOXR_BENCH_WARMUP`,
+`VOXR_BENCH_ITERS`.
 
-## Roadmap
+```bash
+ctest --test-dir build --output-on-failure
+# or run one directly:
+build/test_bench_reconstruct
+```
 
-| Week | Plan |
-| --- | --- |
-| 1 | ✅ CPU SfS + ray-march, file formats, synthetic data, tests, interactive web viewer |
-| 2 | ✅ CUDA kernels for reconstruction and rendering, `--gpu` flag, parity test |
-| 3 | ✅ Grid-resident GPU render loop, CUDA-event + `ncu` profiling (see Performance above); ⬜ texture-memory rewrite |
-| 4 | ✅ GPU-backed interactive viewer (`bake_views --gpu`); ⬜ live windowed camera, final demo |
-
-CPU paths stay as the reference the CUDA versions validate against.
+Artifacts land in `build/test_artifacts/`. GPU columns are omitted when built
+without CUDA.
