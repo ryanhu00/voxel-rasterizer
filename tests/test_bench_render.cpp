@@ -82,7 +82,14 @@ GpuRenderTiming time_render_gpu(const BenchConfig& cfg,
 
 int main() {
     const BenchConfig cfg = voxr_bench::load_config();
-    voxr_bench::log_header("bench_render");
+    voxr_bench::MetricsReport report;
+    report.name   = "bench_render";
+    report.config = cfg;
+#ifdef VOXR_WITH_CUDA
+    report.cuda_available = true;
+#endif
+
+    voxr_bench::log_header(report.name.c_str());
     voxr_bench::log_config(cfg);
 
     SphereDataset ds;
@@ -97,8 +104,9 @@ int main() {
         std::fprintf(stderr, "error: reference grid is empty\n");
         return 1;
     }
-    voxr_bench::log_metric_i("occupied_voxels",
-                             static_cast<long long>(grid.occupied_count()));
+    report.occupied_voxels =
+        static_cast<long long>(grid.occupied_count());
+    voxr_bench::log_metric_i("occupied_voxels", *report.occupied_voxels);
 
     const voxr::Camera cam = voxr_bench::make_render_camera(cfg);
 
@@ -107,10 +115,18 @@ int main() {
         std::fprintf(stderr, "error: render_cpu failed\n");
         return 1;
     }
+    report.cpu_avg_ms = cpu_ms;
     voxr_bench::log_metric("cpu_avg_ms", cpu_ms, "ms");
 
 #ifdef VOXR_WITH_CUDA
     const GpuRenderTiming gpu = time_render_gpu(cfg, grid, cam);
+    report.gpu_upload_ms       = gpu.upload_ms;
+    report.gpu_kernel_avg_ms   = gpu.kernel_avg_ms;
+    report.gpu_kernel_min_ms   = gpu.kernel_min_ms;
+    report.gpu_readback_avg_ms = gpu.readback_avg_ms;
+    report.gpu_frame_avg_ms    = gpu.frame_avg_ms;
+    report.speedup             = cpu_ms / gpu.kernel_avg_ms;
+
     voxr_bench::log_metric("gpu_upload_ms", gpu.upload_ms, "ms  (once)");
     voxr_bench::log_metric("gpu_kernel_avg_ms", gpu.kernel_avg_ms, "ms");
     voxr_bench::log_metric("gpu_kernel_min_ms", gpu.kernel_min_ms, "ms");
@@ -118,10 +134,21 @@ int main() {
     voxr_bench::log_metric("gpu_frame_avg_ms", gpu.frame_avg_ms,
                            "ms  (kernel+readback)");
     voxr_bench::log_speedup(cpu_ms, gpu.kernel_avg_ms);
+
+    voxr::ImageU8 img_cpu, img_gpu;
+    voxr::render_cpu(grid, cam, img_cpu);
+    voxr::render_cuda(grid, cam, img_gpu);
+    report.image_parity = voxr_bench::compare_images(img_cpu, img_gpu);
+    if (!voxr_bench::check_image_parity(*report.image_parity)) {
+        report.pass = false;
+        voxr_bench::finalize_report(report);
+        return 1;
+    }
 #else
     std::fprintf(stderr, "  gpu_*                   n/a (built without CUDA)\n");
 #endif
 
-    std::fprintf(stderr, "PASS\n");
+    report.pass = true;
+    if (!voxr_bench::finalize_report(report)) return 1;
     return 0;
 }

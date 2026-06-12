@@ -35,3 +35,4 @@ data/*
 *.exe
 *.ppm
 *.png
+!docs/screenshots/*.png
