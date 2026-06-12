@@ -18,7 +18,7 @@ JSON metrics, and the documentation below.
 
 | Tool | Required for |
 | --- | --- |
-| netpbm (`pnmtopng`, `pngtopnm`, …) | PPM/PGM ↔ PNG conversion, photo pipeline |
+| netpbm (`pnmtopng`, `pngtopnm`, ...) | PPM/PGM <-> PNG conversion, photo pipeline |
 | ffmpeg | Orbit MP4 export |
 | Python 3 | Local web viewer (`python3 -m http.server`) |
 | `rembg` (`pip install rembg`) | Auto-masking in the photo pipeline |
@@ -46,7 +46,7 @@ data/               Generated datasets (git-ignored)
 
 | Binary | Purpose |
 | --- | --- |
-| `synth_dataset` | Render an analytic shape (sphere/cube/dumbbell) from a ring of cameras → RGB + masks + `cameras.txt`. |
+| `synth_dataset` | Render an analytic shape (sphere/cube/dumbbell) from a ring of cameras -> RGB + masks + `cameras.txt`. |
 | `reconstruct` | Shape-from-silhouette → voxel grid. `--gpu` for the CUDA kernel. |
 | `render` | Render a voxel grid to PPM (single view or orbit). `--gpu` for the CUDA ray-marcher. |
 | `bake_views` | Pre-render an azimuth × elevation × radius grid + self-contained HTML viewer (drag = orbit, scroll = zoom). `--gpu` renders the frames with the resident CUDA loop. |
@@ -225,7 +225,7 @@ Both CUDA kernels are tuned for high occupancy and throughput.
 | Stage | Expected output |
 | --- | --- |
 | `synth_dataset` | 24 (or N) RGB/mask pairs + `cameras.txt` on a ring around the shape |
-| `reconstruct` | `voxels.bin` with ~30% occupancy for a 128³ sphere (visual hull is slightly bloated vs analytic) |
+| `reconstruct` | `voxels.bin` with ~30% occupancy for the sphere (visual hull is slightly bloated vs analytic) |
 | `render` | Shaded PPM of the voxel model from a novel viewpoint |
 | `bake_views` | Pre-rendered frame grid + `viewer.html` for interactive inspection |
 | Benchmarks | CPU/GPU timings within a few percent run-to-run; GPU 30–70× faster depending on stage |
@@ -251,7 +251,7 @@ Orbit frame (one of 36 views around the reconstructed sphere):
 
 After running the demo commands above you can also produce:
 
-- `data/sphere/orbit.mp4` — 360° orbit video
+- `data/sphere/orbit.mp4` — 360 degree orbit video
 - `data/sphere/view/viewer.html` — interactive browser viewer
 
 ---
@@ -299,33 +299,43 @@ dataset:
 Collected with Nsight Compute on the sphere dataset (24 views):
 
 ```
-ncu --launch-count 1 --kernel-name <k> \
-    --section SpeedOfLight --section Occupancy --section WarpStateStats <cmd>
+cd build
+
+ncu --launch-count 1 --kernel-name regex:reconstruct_kernel \
+    --section SpeedOfLight --section Occupancy --section WarpStateStats \
+    ./test_bench_reconstruct
+
+ncu --launch-count 1 --kernel-name regex:render_kernel \
+    --section SpeedOfLight --section Occupancy --section WarpStateStats \
+    ./test_bench_render
 ```
 
 | Metric | `render_kernel` | `reconstruct_kernel` |
 | --- | --- | --- |
-| Duration | 1.70 ms | 13.89 ms |
-| Compute (SM) throughput | 79.0 % | 75.1 % |
-| Memory throughput | 27.6 % | **82.8 %** |
-| DRAM throughput | 1.1 % | 0.4 % |
-| Achieved / theoretical occupancy | 93.4 % / 100 % | 98.5 % / 100 % |
+| Duration | 0.27 ms | 1.55 ms |
+| Compute (SM) throughput | 66.7 % | 78.2 % |
+| Memory throughput | 32.4 % | **80.3 %** |
+| L1/TEX cache throughput | 37.4 % | **81.0 %** |
+| DRAM throughput | 1.4 % | 0.3 % |
+| Achieved / theoretical occupancy | 82.8 % / 100 % | 95.5 % / 100 % |
 
-`render_kernel` warp-issue stalls (cycles per issued instr, top reasons):
-`not_selected` 3.58, `long_scoreboard` 2.82, `wait` 2.60, `lg_throttle` 0.00.
+`render_kernel` warp stats: 12.9 cycles per issued instruction; ~25.0 of 32
+threads active per warp (~22.0 after predication).
+
+`reconstruct_kernel` warp stats: 21.6 cycles per issued instruction; LG memory
+queue stalls account for ~43 % of inter-instruction cycles (~9.4 cycles each).
 
 **Reading the profiles:**
 
-- **Both kernels hit ~full occupancy** — the launch geometry (8³ voxel blocks,
-  16×16 pixel tiles) saturates the SMs.
-- **`render_kernel` is compute-bound** (SM 79 % vs mem 28 %, DRAM ~1 %). DDA
-  arithmetic dominates; spatially coherent rays in a 16×16 tile reuse L2 cache
-  lines, so DRAM traffic is negligible. `not_selected` being the top stall means
-  plenty of eligible warps — the scheduler is busy.
-- **`reconstruct_kernel` is bound by the memory pipeline** (82.8 %), not DRAM
-  (0.4 %). Each voxel bilinear-gathers into every view's mask buffer; neighbouring
-  voxels project to nearby but non-contiguous pixels, so loads scatter through
-  L1/L2 rather than coalesce.
+- **`reconstruct_kernel` is bound by the memory pipeline** (80.3 % mem vs 78.2 %
+  SM, L1/TEX at 81.0 %, DRAM ~0.3 %). Each voxel bilinear-gathers into every
+  view's mask buffer; neighbouring voxels project to nearby but non-contiguous
+  pixels, so loads scatter through L1/TEX rather than coalesce. LG queue stalls
+  dominate warp issue time.
+- **`render_kernel` leans compute-bound** (SM 66.7 % vs mem 32.4 %, DRAM ~1.4 %),
+  but achieved occupancy is only 82.8 %. DDA arithmetic and per-ray divergence
+  leave ~25/32 threads active per warp on average, so there is headroom from
+  reducing branchy control flow rather than DRAM tuning.
 
 ---
 
@@ -337,14 +347,17 @@ Based on the benchmark numbers and `ncu` profiles:
 
 - **Bind masks/images as `cudaTextureObject_t`** — replaces scattered manual
   bilinear gathers with hardware-filtered fetches through the 2D texture cache,
-  directly attacking the 82.8 % memory-pipeline bottleneck. Occupancy is already
-  maxed, so this is the main lever.
+  directly attacking the 81 % L1/TEX bottleneck and LG queue stalls. Occupancy
+  is already near max (95.5 %), so this is the main lever.
 - **SoA camera parameters in constant memory** — reduce redundant per-thread reads
   when iterating over views.
 
 #### Rendering (moderate impact at current grid sizes)
 
-- **3D occupancy texture** — could trim `long_scoreboard` stalls on global loads,
-  but the kernel is already SM-bound with ~1 % DRAM at 128³.
-- **Persistent threads / warp-level ray coherence** — at very deep grids (256³+),
+- **Reduce warp divergence** — fewer predicated branches and more uniform rays
+  per warp could recover the 17 % occupancy gap (82.8 % achieved vs 100 %
+  theoretical).
+- **3D occupancy texture** — could trim global-load latency, but the kernel is
+  already SM-heavy with ~1.4 % DRAM.
+- **Persistent threads / warp-level ray coherence** — at very deep grids
   reducing per-warp DDA step-count variance would matter more than memory tuning.
