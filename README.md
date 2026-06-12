@@ -174,10 +174,10 @@ pipeline:
 2. **Reconstruction** — Shape-from-silhouette visual hull: each voxel is projected
    into every view; a voxel is occupied only if all masks agree. Color is fused by
    averaging RGB samples from views where the voxel projects inside the silhouette.
-3. **Rendering** — Amanatides–Woo 3D-DDA ray marching through the occupancy grid
+3. **Rendering** — 3D-DDA ray marching through the occupancy grid
    with Lambertian shading from stored per-voxel colors.
 
-Both stages have **CPU** (16 `std::thread` workers) and **CUDA** implementations
+Both stages have **CPU** and **CUDA** implementations
 that produce bit-for-bit matching output on the parity checks in the benchmark tests.
 
 #### Features
@@ -262,26 +262,26 @@ After running the demo commands above you can also produce:
 
 | Stage | CPU avg (ms) | GPU avg (ms) | Speedup |
 | --- | ---: | ---: | ---: |
-| **Reconstruction** | 194.1 | 4.4 | **43.9×** |
-| **Render** (full CPU vs GPU kernel) | 18.8 | 0.26 (kernel) | **71.8×** |
-| **Pipeline** (reconstruct + render) | 217.0 | 6.7 | **32.5×** |
+| **Reconstruction** | 216.1 | 4.6 | **46.9×** |
+| **Render** (full CPU vs GPU kernel) | 20.4 | 0.27 (kernel) | **76.2×** |
+| **Pipeline** (reconstruct + render) | 237.3 | 7.2 | **32.9×** |
 
 Render GPU breakdown (grid uploaded once, then repeated frames):
 
 | Metric | Value |
 | --- | ---: |
-| Grid upload (one-time) | 1.28 ms |
-| Kernel avg / min | 0.26 / 0.26 ms |
-| Readback avg | 0.15 ms |
-| Frame avg (kernel + readback) | 0.41 ms (~2,430 fps) |
+| Grid upload (one-time) | 1.30 ms |
+| Kernel avg / min | 0.27 / 0.26 ms |
+| Readback avg | 0.13 ms |
+| Frame avg (kernel + readback) | 0.40 ms (~2,500 fps) |
 
 Pipeline stage breakdown:
 
 | Stage | CPU (ms) | GPU (ms) |
 | --- | ---: | ---: |
-| Reconstruct | 194.3 | 4.4 |
-| Render | 18.9 | 0.54 |
-| **Total** | **217.0** | **6.7** |
+| Reconstruct | 212.8 | 4.6 |
+| Render | 20.3 | 0.53 |
+| **Total** | **237.3** | **7.2** |
 
 #### Correctness (CPU vs GPU parity)
 
