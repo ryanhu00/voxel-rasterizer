@@ -48,15 +48,17 @@ __global__ void reconstruct_kernel(
         int nx, int ny, int nz, float ox, float oy, float oz, float vs,
         const DCam* cams, int num_cams,
         const std::uint8_t* const* masks,
-        const std::uint8_t* const* images,  // null when not fusing color
+        const std::uint8_t* const* images,
         int required, int threshold,
         std::uint8_t* occ, std::uint8_t* cr, std::uint8_t* cg,
         std::uint8_t* cb) {
+    // Map thread to voxel coordinate; boundary guard for non-multiple dims.
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int z = blockIdx.z * blockDim.z + threadIdx.z;
     if (x >= nx || y >= ny || z >= nz) return;
 
+    // Voxel center in world space (register-only, no shared mem needed).
     float wx = ox + (x + 0.5f) * vs;
     float wy = oy + (y + 0.5f) * vs;
     float wz = oz + (z + 0.5f) * vs;
@@ -64,6 +66,8 @@ __global__ void reconstruct_kernel(
     int   consistent = 0, color_count = 0;
     float sr = 0.f, sg = 0.f, sb = 0.f;
 
+    // Uniform camera loop — all threads step through the same camera index,
+    // so warp divergence only occurs at the project/threshold branch.
     for (int ci = 0; ci < num_cams; ++ci) {
         const DCam& cam = cams[ci];
         float u, v;
@@ -80,6 +84,8 @@ __global__ void reconstruct_kernel(
         }
     }
 
+    // Coalesced write: x-fastest layout means warp-consecutive threads write
+    // consecutive addresses in each SoA channel array.
     std::size_t idx = (std::size_t)x + (std::size_t)nx *
                       ((std::size_t)y + (std::size_t)ny * (std::size_t)z);
     if (consistent >= required) {

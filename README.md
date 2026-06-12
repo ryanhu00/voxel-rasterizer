@@ -186,6 +186,32 @@ that produce bit-for-bit matching output on the parity checks in the benchmark t
 - Self-contained HTML viewer (drag to orbit, scroll to zoom)
 - Automated CPU vs GPU benchmark suite with JSON metrics and correctness checks
 
+#### GPU Optimization Techniques
+
+Both CUDA kernels are tuned for high occupancy and throughput.
+
+**Reconstruction kernel (`reconstruct_kernel`)**
+
+| Technique | Effect |
+| --- | --- |
+| Embarrassingly parallel decomposition | One thread per voxel, zero atomics/reductions |
+| 3D block geometry | Maps to voxel spatial locality; neighbouring threads project to nearby pixels and share L1/L2 cache lines during mask reads |
+| Uniform camera loop | All threads in a warp iterate the same camera index in lockstep — minimal divergence (only at the project/threshold branch) |
+| SoA output channels + x-fastest indexing | Warp-consecutive threads write consecutive bytes in each array (occ, cr, cg, cb) — fully coalesced 32-byte stores |
+| Inline bilinear sampling | `sample_mask`/`sample_rgb` are `__device__` functions inlined by nvcc, avoiding function-call overhead |
+
+**Render kernel (`render_kernel`)**
+
+| Technique | Effect |
+| --- | --- |
+| One thread per pixel | Each pixel ray is fully independent — no inter-pixel sync |
+| 16×16 tile blocks | Spatially coherent rays hit overlapping voxels; shared L2 cache lines yield ~1 % DRAM throughput despite heavy per-step reads |
+| Ray-AABB early exit | Rays missing the grid bounding box skip the DDA entirely; border tiles where all 256 rays miss retire whole warps at once |
+| Early-ray termination | DDA returns on the first occupied voxel hit — dense scenes are faster than empty ones |
+| Inline Lambertian shading | Computed right after the DDA hit in the same kernel — no second pass, no global-memory hit records |
+| Grid-resident renderer | `CudaVoxelRenderer` uploads the voxel grid once; each frame is kernel + readback only|
+| Coalesced output writes | Warp-consecutive threads write contiguous RGB bytes, coalesced into 128-byte transactions |
+
 ---
 
 ### 3. Expected Results and Screenshots

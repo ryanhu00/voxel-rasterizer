@@ -56,7 +56,7 @@ __global__ void render_kernel(
     int py = blockIdx.y * blockDim.y + threadIdx.y;
     if (px >= W || py >= H) return;
 
-    // unproject_ray: d_cam = ((u-cx)/fx,(v-cy)/fy,1); dir = R^T d_cam.
+    // Unproject pixel center to world-space ray (all register math).
     float u = px + 0.5f, v = py + 0.5f;
     float dcx = (u - cam.cx) / cam.fx, dcy = (v - cam.cy) / cam.fy, dcz = 1.f;
     float dx = cam.R[0] * dcx + cam.R[3] * dcy + cam.R[6] * dcz;
@@ -193,7 +193,7 @@ bool CudaVoxelRenderer::render(const Camera& camera, ImageU8& out,
 
     const int W = camera.width, H = camera.height;
     const std::size_t out_n = (std::size_t)W * H * 3;
-    if (out_n > impl_->out_cap) {  // (re)allocate output buffer to fit
+    if (out_n > impl_->out_cap) {
         if (impl_->d_out) cudaFree(impl_->d_out);
         VOXR_CUDA_CHECK(cudaMalloc(&impl_->d_out, out_n));
         impl_->out_cap = out_n;
