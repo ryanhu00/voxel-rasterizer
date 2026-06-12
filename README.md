@@ -18,33 +18,28 @@ JSON metrics, and the documentation below.
 
 | Tool | Required for |
 | --- | --- |
-| CMake ≥ 3.16, C++17 compiler | Build |
-| NVIDIA CUDA Toolkit (optional) | GPU paths (`--gpu`, benchmark tests) |
 | netpbm (`pnmtopng`, `pngtopnm`, …) | PPM/PGM ↔ PNG conversion, photo pipeline |
 | ffmpeg | Orbit MP4 export |
 | Python 3 | Local web viewer (`python3 -m http.server`) |
 | `rembg` (`pip install rembg`) | Auto-masking in the photo pipeline |
-
-The build degrades gracefully to CPU-only when no CUDA toolkit is present.
 
 #### Build
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-ctest --test-dir build --output-on-failure
 ```
 
 #### Repository layout
 
 ```
-include/voxr/    Public headers
-src/             CPU library + CUDA kernels (.cu)
-apps/            CLI tools
-scripts/         Pipeline drivers
-tests/           CPU vs GPU benchmark binaries (ctest)
-docs/            Screenshots and submission assets
-data/            Generated datasets (git-ignored)
+include/voxr/       Public headers
+src/                CPU library + CUDA kernels (.cu)
+apps/               CLI tools
+scripts/            Pipeline drivers
+photos/bottle_data  Real image data for testing
+tests/              CPU vs GPU benchmark binaries (ctest)
+data/               Generated datasets (git-ignored)
 ```
 
 #### CLI tools
@@ -57,7 +52,7 @@ data/            Generated datasets (git-ignored)
 | `bake_views` | Pre-render an azimuth × elevation × radius grid + self-contained HTML viewer (drag = orbit, scroll = zoom). `--gpu` renders the frames with the resident CUDA loop. |
 | `make_orbit_cameras` | Write `cameras.txt` for a folder of ring-orbit photos. |
 
-#### Quick start (synthetic sphere)
+#### Quick start for CPU (synthetic sphere)
 
 ```bash
 build/synth_dataset --out data/sphere --shape sphere --views 24 --res 256 256
@@ -82,10 +77,7 @@ Swap `--shape cube` or `--shape dumbbell` to test the visual hull on concavity.
 
 #### GPU usage
 
-Append `--gpu` to `reconstruct` or `render` — same flags, same output. Layout
-matches the strategy notes in [src/reconstruct_cpu.cpp](src/reconstruct_cpu.cpp) and
-[src/render_cpu.cpp](src/render_cpu.cpp): reconstruction is one thread per voxel
-(`8×8×8` blocks), rendering is one thread per pixel (`16×16` tiles).
+Append `--gpu` to `reconstruct` or `render` — same flags, same output.
 
 ```bash
 build/reconstruct --in data/sphere --out data/sphere/voxels.bin --grid 256 --gpu
@@ -100,7 +92,7 @@ just a kernel launch + readback.
 ```bash
 build/render --voxels data/sphere/voxels.bin --orbit out --views 36 --gpu
 build/render --voxels data/sphere/voxels.bin --bench 200   # isolated GPU timings
-build/bake_views --voxels data/sphere/voxels.bin --out view --gpu
+build/bake_views --voxels data/sphere/voxels.bin --out data/sphere/view --gpu
 ```
 
 #### Your own photos
@@ -109,11 +101,30 @@ build/bake_views --voxels data/sphere/voxels.bin --out view --gpu
 pipeline: auto-converts PNG/JPG/PPM, masks via `rembg`, writes cameras,
 reconstructs, bakes the viewer.
 
+**Photo pipeline dependencies** (user install, no sudo required):
+
 ```bash
-scripts/photos_to_voxels.sh ~/photos/bottle data/bottle \
-    -- --radius 5.0 --fov 1.2 --elev 0
+python3 -m pip install --user pillow rembg onnxruntime
+python3 -c "import rembg; print('rembg ok')"
+
+# Full pipeline (CPU)
+scripts/photos_to_voxels.sh photos/bottle data/bottle \
+    --grid 128 \
+    -- --radius 12.0 --fov 0.8 --elev 10
+
+# Full pipeline (GPU reconstruct + bake)
+scripts/photos_to_voxels.sh photos/bottle data/bottle \
+    --grid 128 --gpu \
+    -- --radius 12.0 --fov 0.8 --elev 10
 
 cd data/bottle/view && python3 -m http.server 8000
+
+# Optional: orbit turntable around the reconstructed model
+build/render --voxels data/bottle/voxels.bin --orbit data/bottle/orbit \
+             --views 36 --radius 5 --res 512 512 --gpu
+for f in data/bottle/orbit/*.ppm; do pnmtopng "$f" > "${f%.ppm}.png"; done
+ffmpeg -y -framerate 24 -i data/bottle/orbit/frame_%04d.png \
+       -c:v libx264 -pix_fmt yuv420p data/bottle/orbit.mp4
 ```
 
 #### File formats
@@ -145,15 +156,8 @@ to **stderr**, a one-line summary to **stdout**, and writes JSON under
 | [`test_bench_render`](tests/test_bench_render.cpp) | `render_cpu` vs `render_cuda` (+ upload/kernel/readback) | `bench_render.json` |
 | [`test_bench_pipeline`](tests/test_bench_pipeline.cpp) | Reconstruct + render end-to-end | `bench_pipeline.json` |
 
-Defaults: 128³ grid, 24 views, 128² synth images, 512² render. Override via env
-vars: `VOXR_BENCH_GRID`, `VOXR_BENCH_VIEWS`, `VOXR_BENCH_SYNTH_RES`,
-`VOXR_BENCH_RENDER_W`, `VOXR_BENCH_RENDER_H`, `VOXR_BENCH_WARMUP`,
-`VOXR_BENCH_ITERS`, `VOXR_BENCH_METRICS_DIR`.
-
 ```bash
-ctest --test-dir build --output-on-failure -V   # -V shows stdout summaries
-build/test_bench_reconstruct
-cat build/test_artifacts/metrics/bench_reconstruct.json
+ctest --test-dir build --output-on-failure -V
 ```
 
 ---
@@ -254,20 +258,6 @@ After running the demo commands above you can also produce:
 
 ### 4. Performance Analysis Comparing CPU and GPU Versions
 
-#### Benchmark setup
-
-| Parameter | Value |
-| --- | --- |
-| GPU | NVIDIA RTX A5000 (sm_86), CUDA 12.5 |
-| CPU baseline | 16 `std::thread` workers |
-| Grid | 128³ voxels |
-| Views | 24 synthetic images at 128×128 |
-| Render resolution | 512×512 |
-| Warmup / timed iterations | 1 / 3 |
-
-Metrics below are from `build/test_artifacts/metrics/*.json` produced by the ctest
-benchmark suite. Re-run with `ctest --test-dir build -R bench` to regenerate.
-
 #### Wall-clock results (CPU vs GPU)
 
 | Stage | CPU avg (ms) | GPU avg (ms) | Speedup |
@@ -358,15 +348,3 @@ Based on the benchmark numbers and `ncu` profiles:
   but the kernel is already SM-bound with ~1 % DRAM at 128³.
 - **Persistent threads / warp-level ray coherence** — at very deep grids (256³+),
   reducing per-warp DDA step-count variance would matter more than memory tuning.
-
-#### Pipeline / UX
-
-- **Async H2D + overlap** — pipeline grid upload with the first kernel launch in
-  multi-frame workflows.
-- **Higher-quality photo masking** — interactive refinement or multi-view
-  consistency checks beyond single-image `rembg`.
-- **Adaptive grid resolution** — coarse-to-fine reconstruction to cut voxel count
-  on large scenes.
-
-**Net:** reconstruction is the better optimization target, and texture memory is
-the right tool — the profile confirms this rather than guessing.
